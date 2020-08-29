@@ -11,6 +11,10 @@
 #include "../interpreter/wasm.h"
 #endif
 
+#if WASM_USE_MEMORY_CALLBACK != 0
+#include "wasm_exec_env_memory_callback.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -98,6 +102,10 @@ typedef struct WASMExecEnv {
 
 #ifdef OS_ENABLE_HW_BOUND_CHECK
     WASMJmpBuf *jmpbuf_stack_top;
+#endif
+
+#if WASM_USE_MEMORY_CALLBACK != 0
+    WASMExecEnvMemoryCallback *mem_cb;
 #endif
 
     /* The WASM stack size */

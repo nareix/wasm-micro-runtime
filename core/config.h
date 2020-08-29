@@ -131,6 +131,10 @@ enum {
 #define WASM_ENABLE_LABELS_AS_VALUES 0
 #endif
 
+#ifndef WASM_USE_MEMORY_CALLBACK
+#define WASM_USE_MEMORY_CALLBACK 0
+#endif
+
 /* Enable fast interpreter or not */
 #ifndef WASM_ENABLE_FAST_INTERP
 #define WASM_ENABLE_FAST_INTERP 0

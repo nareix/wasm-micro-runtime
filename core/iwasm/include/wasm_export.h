@@ -7,6 +7,7 @@
 #define _WASM_EXPORT_H
 
 #include <stdint.h>
+#include <sys/types.h>
 #include <stdbool.h>
 #include "lib_export.h"
 
@@ -344,6 +345,12 @@ wasm_runtime_lookup_function(wasm_module_inst_t const module_inst,
 wasm_exec_env_t
 wasm_runtime_create_exec_env(wasm_module_inst_t module_inst,
                              uint32_t stack_size);
+
+void 
+wasm_exec_env_set_memory_callback(wasm_exec_env_t exec_env, void *cb);
+
+void *
+wasm_exec_env_memory_callback(wasm_exec_env_t exec_env);
 
 /**
  * Destroy the execution environment.

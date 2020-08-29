@@ -848,6 +848,12 @@ wasm_runtime_call_wasm(WASMExecEnv *exec_env,
     /* set thread handle and stack boundary */
     wasm_exec_env_set_thread_info(exec_env);
 
+#if WASM_USE_MEMORY_CALLBACK != 0
+    exec_env->mem_cb->host_stack_base = __builtin_frame_address(0);
+    exec_env->mem_cb->stack_bottom = exec_env->wasm_stack.s.bottom;
+    exec_env->mem_cb->rev_sp = PTR_EXT_SET_BIT|PTR_EXT_TYPE_FRAME_SP|(exec_env->wasm_stack_size&PTR_EXT_VALUE_MASK);
+#endif
+
 #if WASM_ENABLE_INTERP != 0
     if (exec_env->module_inst->module_type == Wasm_Module_Bytecode)
         return wasm_call_function(exec_env,
@@ -1029,6 +1035,12 @@ bool
 wasm_runtime_validate_app_str_addr(WASMModuleInstanceCommon *module_inst,
                                    int32 app_str_offset)
 {
+#if WASM_USE_MEMORY_CALLBACK != 0
+    if (app_str_offset & PTR_EXT_SET_BIT) {
+        return true;
+    }
+#endif
+
     int32 app_end_offset;
     char *str, *str_end;
 

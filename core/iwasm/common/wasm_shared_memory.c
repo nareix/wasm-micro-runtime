@@ -300,6 +300,10 @@ wasm_runtime_atomic_wait(WASMModuleInstanceCommon *module, void *address,
 
 #if WASM_ENABLE_INTERP != 0
     if (module->module_type == Wasm_Module_Bytecode) {
+#if WASM_USE_MEMORY_CALLBACK != 0
+        wasm_runtime_set_exception(module, "unsupported");
+        return -1;
+#endif
         WASMModuleInstance *module_inst = (WASMModuleInstance *)module;
         /* Currently we have only one memory instance */
         if (!module_inst->memories[0]->is_shared) {
@@ -401,6 +405,15 @@ uint32
 wasm_runtime_atomic_notify(WASMModuleInstanceCommon *module,
                            void *address, uint32 count)
 {
+#if WASM_ENABLE_INTERP != 0
+    if (module->module_type == Wasm_Module_Bytecode) {
+#if WASM_USE_MEMORY_CALLBACK != 0
+        wasm_runtime_set_exception(module, "unsupported");
+        return -1;
+#endif
+    }
+#endif
+
     uint32 notify_result;
     AtomicWaitInfo *wait_info;
 

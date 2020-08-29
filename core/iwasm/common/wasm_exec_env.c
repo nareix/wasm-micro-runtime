@@ -118,6 +118,18 @@ wasm_exec_env_destroy(WASMExecEnv *exec_env)
     wasm_exec_env_destroy_internal(exec_env);
 }
 
+#if WASM_USE_MEMORY_CALLBACK != 0
+void 
+wasm_exec_env_set_memory_callback(WASMExecEnv *exec_env, void *cb) {
+    exec_env->mem_cb = cb;
+}
+
+void *
+wasm_exec_env_memory_callback(WASMExecEnv *exec_env) {
+    return exec_env->mem_cb;
+}
+#endif
+
 WASMModuleInstanceCommon *
 wasm_exec_env_get_module_inst(WASMExecEnv *exec_env)
 {

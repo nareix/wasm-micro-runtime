@@ -1633,6 +1633,12 @@ bool
 wasm_validate_app_addr(WASMModuleInstance *module_inst,
                        int32 app_offset, uint32 size)
 {
+#if WASM_USE_MEMORY_CALLBACK != 0
+    if (app_offset & PTR_EXT_SET_BIT) {
+        return true;
+    }
+#endif
+
     WASMMemoryInstance *memory = module_inst->default_memory;
     uint32 memory_data_size =
         memory->num_bytes_per_page * memory->cur_page_count;
@@ -1675,6 +1681,10 @@ void *
 wasm_addr_app_to_native(WASMModuleInstance *module_inst,
                         int32 app_offset)
 {
+#if WASM_USE_MEMORY_CALLBACK != 0
+    return (void *)(uintptr_t)app_offset;
+#endif
+
     WASMMemoryInstance *memory = module_inst->default_memory;
     uint8 *addr = memory->memory_data + app_offset;
 

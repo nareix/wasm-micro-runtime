@@ -22,6 +22,7 @@ typedef float64 CellType_F64;
 
 /* 64-bit Memory accessors. */
 #if WASM_CPU_SUPPORTS_UNALIGNED_64BIT_ACCESS != 0
+
 #define PUT_I64_TO_ADDR(addr, value) do {       \
     *(int64*)(addr) = (int64)(value);           \
   } while (0)
@@ -32,6 +33,84 @@ typedef float64 CellType_F64;
 #define GET_I64_FROM_ADDR(addr) (*(int64*)(addr))
 #define GET_F64_FROM_ADDR(addr) (*(float64*)(addr))
 
+#if WASM_USE_MEMORY_CALLBACK != 0
+
+static inline uint32_t host_stack_addr(WASMExecEnv *exec_env, void *addr) {
+  return (uint32_t)(exec_env->mem_cb->host_stack_base-addr)|(PTR_EXT_SET_BIT|PTR_EXT_TYPE_HOST_STACK);
+}
+
+static inline uint32_t p2u(void *p) {
+  return (uint32_t)(p - (void*)0);
+}
+
+#define MEMORY_STORE_FN(type) \
+static inline void memory_store_##type( \
+  WASMExecEnv *exec_env, WASMModuleInstance *module, void *dst_maddr, type value) { \
+  int n = sizeof(type); \
+  uint32_t src = host_stack_addr(exec_env, (void *)&value); \
+  if (exec_env->mem_cb->cb_memmove(exec_env, p2u(dst_maddr), n, src, n) < 0) { \
+    wasm_set_exception(module, "memory_store_callback failed"); \
+  } \
+}
+
+#define MEMORY_LOAD_FN(type) \
+static inline type memory_load_##type( \
+  WASMExecEnv *exec_env, WASMModuleInstance *module, void *src_maddr) { \
+  type value = 0; \
+  int n = sizeof(type); \
+  uint32_t dst = host_stack_addr(exec_env, (void *)&value); \
+  if (exec_env->mem_cb->cb_memmove(exec_env, dst, n, p2u(src_maddr), n) < 0) { \
+    wasm_set_exception(module, "memory_load_callback failed"); \
+  } \
+  return value; \
+}
+
+#define MEMORY_FN_ALL(fn) \
+  fn(int64) \
+  fn(float64) \
+  fn(uint32) \
+  fn(int32) \
+  fn(uint16) \
+  fn(int16) \
+  fn(uint8) \
+  fn(int8)
+
+MEMORY_FN_ALL(MEMORY_STORE_FN)
+MEMORY_FN_ALL(MEMORY_LOAD_FN)
+
+/* For STORE opcodes */
+#define STORE_F64(addr, value) memory_store_float64(exec_env, module, addr, value)
+#define STORE_I64(addr, value) memory_store_int64(exec_env, module, addr, value)
+#define STORE_U32(addr, value) memory_store_uint32(exec_env, module, addr, value)
+#define STORE_U16(addr, value) memory_store_uint16(exec_env, module, addr, value)
+#define STORE_U8(addr, value) memory_store_uint8(exec_env, module, addr, value)
+
+/* For LOAD opcodes */
+#define LOAD_I64(addr) memory_load_int64(exec_env, module, addr)
+#define LOAD_F64(addr) memory_load_float64(exec_env,module, addr)
+#define LOAD_I32(addr) memory_load_int32(exec_env, module, addr)
+#define LOAD_U32(addr) memory_load_uint32(exec_env, module, addr)
+#define LOAD_I16(addr) memory_load_int16(exec_env, module, addr)
+#define LOAD_U16(addr) memory_load_uint16(exec_env, module, addr)
+#define LOAD_U8(addr) memory_load_uint8(exec_env, module, addr)
+#define LOAD_S8(addr) memory_load_int8(exec_env, module, addr)
+
+#define MEM_COPY(dst, dlen, src, slen) { \
+  if (exec_env->mem_cb->cb_memmove(exec_env, p2u(dst), dlen, p2u(src), slen) < 0) { \
+    wasm_set_exception(module, "memory_move_callback failed"); \
+  } \
+}
+
+#define MEM_MOVE MEM_COPY
+
+#define MEM_FILL(dst, val, len) { \
+  if (exec_env->mem_cb->cb_memset(exec_env, p2u(dst), val, len) < 0) { \
+    wasm_set_exception(module, "memory_fill_callback failed"); \
+  } \
+}
+
+#else
+
 /* For STORE opcodes */
 #define STORE_I64 PUT_I64_TO_ADDR
 #define STORE_U32(addr, value) do {             \
@@ -39,6 +118,9 @@ typedef float64 CellType_F64;
   } while (0)
 #define STORE_U16(addr, value) do {             \
     *(uint16*)(addr) = (uint16)(value);         \
+  } while (0)
+#define STORE_U8(addr, value) do {             \
+    *(uint8*)(addr) = (uint8)(value);         \
   } while (0)
 
 /* For LOAD opcodes */
@@ -48,8 +130,21 @@ typedef float64 CellType_F64;
 #define LOAD_U32(addr) (*(uint32*)(addr))
 #define LOAD_I16(addr) (*(int16*)(addr))
 #define LOAD_U16(addr) (*(uint16*)(addr))
+#define LOAD_S8(addr) (*(int8*)(addr))
+#define LOAD_U8(addr) (*(uint8*)(addr))
 
-#else  /* WASM_CPU_SUPPORTS_UNALIGNED_64BIT_ACCESS != 0 */
+#define MEM_COPY bh_memcpy_s
+#define MEM_MOVE bh_memmove_s
+#define MEM_FILL memset
+
+#endif
+
+#else 
+
+#if WASM_USE_MEMORY_CALLBACK != 0
+#error "unspported"
+#endif 
+
 #define PUT_I64_TO_ADDR(addr, value) do {       \
     union { int64 val; uint32 parts[2]; } u;    \
     u.val = (int64)(value);                     \
@@ -226,6 +321,36 @@ LOAD_I16(void *addr)
 
 #endif  /* WASM_CPU_SUPPORTS_UNALIGNED_64BIT_ACCESS != 0 */
 
+#if WASM_USE_MEMORY_CALLBACK != 0
+
+static inline bool is_addr_valid(uint64 addr, uint64 linear_mem_size) {
+  if (addr & PTR_EXT_SET_BIT) {
+    return true;
+  }
+  return addr <= linear_mem_size;
+}
+
+#define CHECK_MEMORY_OVERFLOW(bytes) do {                                   \
+    uint64 offset1 = (uint64)offset + (uint64)addr;                         \
+    if (is_addr_valid(offset1 + bytes, (uint64)linear_mem_size)) {          \
+      /* If offset1 is in valid range, maddr must also be in valid range,   \
+         no need to check it again. */                                      \
+      maddr = (uint8_t*)NULL + offset1;                                     \
+    } else                                                                  \
+      goto out_of_bounds;                                                   \
+  } while (0)
+
+#define CHECK_BULK_MEMORY_OVERFLOW(start, bytes, maddr) do {                \
+    uint64 offset1 = (uint32)(start);                                       \
+    if (is_addr_valid(offset1 + bytes, (uint64)linear_mem_size)) {          \
+      /* App heap space is not valid space for bulk memory operation */     \
+      maddr = (uint8_t*)NULL + offset1;                                     \
+    } else                                                                  \
+      goto out_of_bounds;                                                   \
+  } while (0)
+
+#else
+
 #define CHECK_MEMORY_OVERFLOW(bytes) do {                                   \
     uint64 offset1 = (uint64)offset + (uint64)addr;                         \
     if (offset1 + bytes <= (uint64)linear_mem_size)                         \
@@ -244,6 +369,43 @@ LOAD_I16(void *addr)
     else                                                                    \
       goto out_of_bounds;                                                   \
   } while (0)
+
+#endif
+
+#if WASM_USE_MEMORY_CALLBACK != 0
+
+#define GET_GLOBAL_ADDR() \
+  global_addr = (uint8*)((global_idx)|(PTR_EXT_SET_BIT|PTR_EXT_TYPE_GLOBAL)); \
+  (void)global_data; \
+  (void)globals; \
+  (void)global;
+
+#define SET_FRAME_SP() { \
+  exec_env->mem_cb->frame_sp = frame_sp; \
+}
+
+#else
+
+#if WASM_ENABLE_MULTI_MODULE == 0 
+#define GET_GLOBAL_ADDR0 \
+          global_addr = global_data + global->data_offset;
+#else
+#define GET_GLOBAL_ADDR0 \
+          global_addr = global->import_global_inst \
+                        ? global->import_module_inst->global_data \
+                          + global->import_global_inst->data_offset \
+                        : global_data + global->data_offset; 
+#endif
+
+#define GET_GLOBAL_ADDR() \
+          bh_assert(global_idx < module->global_count); \
+          global = globals + global_idx; \
+          GET_GLOBAL_ADDR0
+
+#define SET_FRAME_SP() 
+
+#endif
+
 
 #define CHECK_ATOMIC_MEMORY_ACCESS() do {               \
     if (((uintptr_t)maddr & ((1 << align) - 1)) != 0)   \
@@ -770,8 +932,8 @@ trunc_f64_to_int(WASMModuleInstance *module,
       CHECK_ATOMIC_MEMORY_ACCESS();                                 \
                                                                     \
       os_mutex_lock(&memory->mem_lock);                             \
-      readv = (uint32)(*(uint8*)maddr);                             \
-      *(uint8*)maddr = (uint8)(readv op sval);                      \
+      readv = (uint32)LOAD_U8(maddr);                               \
+      STORE_U8(maddr, (uint8)(readv op sval));                      \
       os_mutex_unlock(&memory->mem_lock);                           \
     }                                                               \
     else if (opcode == WASM_OP_ATOMIC_RMW_I32_##OP_NAME##16_U) {    \
@@ -810,8 +972,8 @@ trunc_f64_to_int(WASMModuleInstance *module,
       CHECK_ATOMIC_MEMORY_ACCESS();                                 \
                                                                     \
       os_mutex_lock(&memory->mem_lock);                             \
-      readv = (uint64)(*(uint8*)maddr);                             \
-      *(uint8*)maddr = (uint8)(readv op sval);                      \
+      readv = (uint64)LOAD_U8(maddr);                               \
+      STORE_U8(maddr, (uint8)(readv op sval));                      \
       os_mutex_unlock(&memory->mem_lock);                           \
     }                                                               \
     else if (opcode == WASM_OP_ATOMIC_RMW_I64_##OP_NAME##16_U) {    \
@@ -1046,14 +1208,34 @@ wasm_interp_call_func_import(WASMModuleInstance *module_inst,
 
 #define HANDLE_OP(opcode) HANDLE_##opcode
 #define FETCH_OPCODE_AND_DISPATCH() goto *handle_table[*frame_ip++]
-#define HANDLE_OP_END() FETCH_OPCODE_AND_DISPATCH()
+#define HANDLE_OP_END0() FETCH_OPCODE_AND_DISPATCH()
 
 #else   /* else of WASM_ENABLE_LABELS_AS_VALUES */
 
 #define HANDLE_OP(opcode) case opcode
-#define HANDLE_OP_END() continue
+#define HANDLE_OP_END0() continue
 
 #endif  /* end of WASM_ENABLE_LABELS_AS_VALUES */
+
+#if WASM_USE_MEMORY_CALLBACK != 0
+
+#define HANDLE_OP_END() { \
+  if (wasm_get_exception(module)) \
+    goto got_exception; \
+  HANDLE_OP_END0(); \
+}
+
+#else
+
+#define HANDLE_OP_END HANDLE_OP_END0
+
+#endif
+
+#if 0
+#define DEBUG_OP(...) printf(__VA_ARGS__)
+#else
+#define DEBUG_OP(...) 
+#endif
 
 static void
 wasm_interp_call_func_bytecode(WASMModuleInstance *module,
@@ -1063,8 +1245,8 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
 {
   WASMMemoryInstance *memory = module->default_memory;
   uint32 num_bytes_per_page = memory ? memory->num_bytes_per_page : 0;
-  uint8 *global_data = module->global_data;
   uint32 linear_mem_size = memory ? num_bytes_per_page * memory->cur_page_count : 0;
+  uint8 *global_data = module->global_data;
   WASMTableInstance *table = module->default_table;
   WASMType **wasm_types = module->module->types;
   WASMGlobalInstance *globals = module->globals, *global;
@@ -1275,6 +1457,7 @@ label_pop_csp_n:
         CHECK_SUSPEND_FLAGS();
 #endif
         read_leb_uint32(frame_ip, frame_ip_end, fidx);
+        DEBUG_OP("call %d\n", fidx);
 #if WASM_ENABLE_MULTI_MODULE != 0
         if (fidx >= module->function_count) {
           wasm_set_exception(module, "unknown function");
@@ -1414,10 +1597,13 @@ label_pop_csp_n:
       HANDLE_OP (EXT_OP_GET_LOCAL_FAST):
         {
           local_offset = *frame_ip++;
+          DEBUG_OP("local.get %d\n", local_offset);
           if (local_offset & 0x80)
             PUSH_I64(GET_I64_FROM_ADDR(frame_lp + (local_offset & 0x7F)));
-          else
+          else {
             PUSH_I32(*(int32*)(frame_lp + local_offset));
+            DEBUG_OP(" v=%x\n", *(int32*)(frame_lp + local_offset));
+          }
           HANDLE_OP_END ();
         }
 
@@ -1476,6 +1662,7 @@ label_pop_csp_n:
 
       HANDLE_OP (EXT_OP_TEE_LOCAL_FAST):
         {
+          DEBUG_OP("tee.local\n");
           local_offset = *frame_ip++;
           if (local_offset & 0x80)
             PUT_I64_TO_ADDR((uint32*)(frame_lp + (local_offset & 0x7F)),
@@ -1487,88 +1674,45 @@ label_pop_csp_n:
 
       HANDLE_OP (WASM_OP_GET_GLOBAL):
         {
+          DEBUG_OP("global.get\n");
           read_leb_uint32(frame_ip, frame_ip_end, global_idx);
-          bh_assert(global_idx < module->global_count);
-          global = globals + global_idx;
-#if WASM_ENABLE_MULTI_MODULE == 0
-          global_addr = global_data + global->data_offset;
-#else
-          global_addr = global->import_global_inst
-                        ? global->import_module_inst->global_data
-                          + global->import_global_inst->data_offset
-                        : global_data + global->data_offset;
-#endif
-          PUSH_I32(*(uint32*)global_addr);
+          GET_GLOBAL_ADDR();
+          PUSH_I32(LOAD_U32(global_addr));
           HANDLE_OP_END ();
         }
 
     HANDLE_OP (WASM_OP_GET_GLOBAL_64):
         {
           read_leb_uint32(frame_ip, frame_ip_end, global_idx);
-          bh_assert(global_idx < module->global_count);
-          global = globals + global_idx;
-#if WASM_ENABLE_MULTI_MODULE == 0
-          global_addr = global_data + global->data_offset;
-#else
-          global_addr = global->import_global_inst
-                        ? global->import_module_inst->global_data
-                          + global->import_global_inst->data_offset
-                        : global_data + global->data_offset;
-#endif
-          PUSH_I64(GET_I64_FROM_ADDR((uint32*)global_addr));
+          GET_GLOBAL_ADDR();
+          PUSH_I64(LOAD_I64(global_addr));
           HANDLE_OP_END ();
         }
 
       HANDLE_OP (WASM_OP_SET_GLOBAL):
         {
+          DEBUG_OP("global.set\n");
           read_leb_uint32(frame_ip, frame_ip_end, global_idx);
-          bh_assert(global_idx < module->global_count);
-          global = globals + global_idx;
-#if WASM_ENABLE_MULTI_MODULE == 0
-          global_addr = global_data + global->data_offset;
-#else
-          global_addr = global->import_global_inst
-                        ? global->import_module_inst->global_data
-                          + global->import_global_inst->data_offset
-                        : global_data + global->data_offset;
-#endif
-          *(int32*)global_addr = POP_I32();
+          GET_GLOBAL_ADDR();
+          STORE_U32(global_addr, POP_I32());
           HANDLE_OP_END ();
         }
 
       HANDLE_OP (WASM_OP_SET_GLOBAL_AUX_STACK):
         {
           read_leb_uint32(frame_ip, frame_ip_end, global_idx);
-          bh_assert(global_idx < module->global_count);
-          global = globals + global_idx;
-#if WASM_ENABLE_MULTI_MODULE == 0
-          global_addr = global_data + global->data_offset;
-#else
-          global_addr = global->import_global_inst
-                        ? global->import_module_inst->global_data
-                          + global->import_global_inst->data_offset
-                        : global_data + global->data_offset;
-#endif
+          GET_GLOBAL_ADDR();
           if (*(uint32*)(frame_sp - 1) < exec_env->aux_stack_boundary)
             goto out_of_bounds;
-          *(int32*)global_addr = POP_I32();
+          STORE_U32(global_addr, POP_I32());
           HANDLE_OP_END ();
         }
 
       HANDLE_OP (WASM_OP_SET_GLOBAL_64):
         {
           read_leb_uint32(frame_ip, frame_ip_end, global_idx);
-          bh_assert(global_idx < module->global_count);
-          global = globals + global_idx;
-#if WASM_ENABLE_MULTI_MODULE == 0
-          global_addr = global_data + global->data_offset;
-#else
-          global_addr = global->import_global_inst
-                        ? global->import_module_inst->global_data
-                          + global->import_global_inst->data_offset
-                        : global_data + global->data_offset;
-#endif
-          PUT_I64_TO_ADDR((uint32*)global_addr, POP_I64());
+          GET_GLOBAL_ADDR();
+          STORE_I64(global_addr, POP_I64());
           HANDLE_OP_END ();
         }
 
@@ -1609,7 +1753,7 @@ label_pop_csp_n:
           read_leb_uint32(frame_ip, frame_ip_end, offset);
           addr = POP_I32();
           CHECK_MEMORY_OVERFLOW(1);
-          PUSH_I32(sign_ext_8_32(*(int8*)maddr));
+          PUSH_I32(sign_ext_8_32(LOAD_S8(maddr)));
           (void)flags;
           HANDLE_OP_END();
         }
@@ -1622,7 +1766,7 @@ label_pop_csp_n:
           read_leb_uint32(frame_ip, frame_ip_end, offset);
           addr = POP_I32();
           CHECK_MEMORY_OVERFLOW(1);
-          PUSH_I32((uint32)(*(uint8*)maddr));
+          PUSH_I32((uint32)LOAD_U8(maddr));
           (void)flags;
           HANDLE_OP_END();
         }
@@ -1661,7 +1805,7 @@ label_pop_csp_n:
           read_leb_uint32(frame_ip, frame_ip_end, offset);
           addr = POP_I32();
           CHECK_MEMORY_OVERFLOW(1);
-          PUSH_I64(sign_ext_8_64(*(int8*)maddr));
+          PUSH_I64(sign_ext_8_64(LOAD_S8(maddr)));
           (void)flags;
           HANDLE_OP_END();
         }
@@ -1674,7 +1818,7 @@ label_pop_csp_n:
           read_leb_uint32(frame_ip, frame_ip_end, offset);
           addr = POP_I32();
           CHECK_MEMORY_OVERFLOW(1);
-          PUSH_I64((uint64)(*(uint8*)maddr));
+          PUSH_I64((uint64)LOAD_U8(maddr));
           (void)flags;
           HANDLE_OP_END();
         }
@@ -1742,6 +1886,7 @@ label_pop_csp_n:
           read_leb_uint32(frame_ip, frame_ip_end, offset);
           frame_sp--;
           addr = POP_I32();
+          DEBUG_OP("i32.store offset=%d addr=%x\n", offset, addr);
           CHECK_MEMORY_OVERFLOW(4);
           STORE_U32(maddr, frame_sp[1]);
           (void)flags;
@@ -1778,7 +1923,7 @@ label_pop_csp_n:
 
           if (opcode == WASM_OP_I32_STORE8) {
               CHECK_MEMORY_OVERFLOW(1);
-              *(uint8*)maddr = (uint8)sval;
+              STORE_U8(maddr, (uint8)sval);
           }
           else {
               CHECK_MEMORY_OVERFLOW(2);
@@ -1804,7 +1949,7 @@ label_pop_csp_n:
 
           if (opcode == WASM_OP_I64_STORE8) {
               CHECK_MEMORY_OVERFLOW(1);
-              *(uint8*)maddr = (uint8)sval;
+              STORE_U8(maddr, (uint8)sval);
           }
           else if(opcode == WASM_OP_I64_STORE16) {
               CHECK_MEMORY_OVERFLOW(2);
@@ -1821,6 +1966,10 @@ label_pop_csp_n:
       /* memory size and memory grow instructions */
       HANDLE_OP (WASM_OP_MEMORY_SIZE):
       {
+        #if WASM_USE_MEMORY_CALLBACK != 0
+        wasm_set_exception(module, "unsupported opcode");
+        goto got_exception;
+        #endif
         uint32 reserved;
         read_leb_uint32(frame_ip, frame_ip_end, reserved);
         PUSH_I32(memory->cur_page_count);
@@ -1830,6 +1979,10 @@ label_pop_csp_n:
 
       HANDLE_OP (WASM_OP_MEMORY_GROW):
       {
+        #if WASM_USE_MEMORY_CALLBACK != 0
+        wasm_set_exception(module, "unsupported opcode");
+        goto got_exception;
+        #endif
         uint32 reserved, delta, prev_page_count = memory->cur_page_count;
 
         read_leb_uint32(frame_ip, frame_ip_end, reserved);
@@ -1853,6 +2006,7 @@ label_pop_csp_n:
 
       /* constant instructions */
       HANDLE_OP (WASM_OP_I32_CONST):
+        DEBUG_OP("i32.const\n");
         DEF_OP_I_CONST(int32, I32);
         HANDLE_OP_END ();
 
@@ -2031,10 +2185,12 @@ label_pop_csp_n:
         HANDLE_OP_END ();
 
       HANDLE_OP (WASM_OP_I32_ADD):
+        DEBUG_OP("i32.add\n");
         DEF_OP_NUMERIC(uint32, uint32, I32, +);
         HANDLE_OP_END ();
 
       HANDLE_OP (WASM_OP_I32_SUB):
+        DEBUG_OP("i32.sub\n");
         DEF_OP_NUMERIC(uint32, uint32, I32, -);
         HANDLE_OP_END ();
 
@@ -2706,8 +2862,7 @@ label_pop_csp_n:
           if (offset + bytes > seg_len)
             goto out_of_bounds;
 
-          bh_memcpy_s(maddr, linear_mem_size - addr,
-                      data + offset, bytes);
+          MEM_COPY(maddr, linear_mem_size - addr, data + offset, bytes);
           break;
         }
         case WASM_OP_DATA_DROP:
@@ -2734,8 +2889,7 @@ label_pop_csp_n:
           CHECK_BULK_MEMORY_OVERFLOW(dst, len, mdst);
 
           /* allowing the destination and source to overlap */
-          bh_memmove_s(mdst, linear_mem_size - dst,
-                       msrc, len);
+          MEM_MOVE(mdst, linear_mem_size - dst, msrc, len);
 
           break;
         }
@@ -2751,7 +2905,7 @@ label_pop_csp_n:
 
           CHECK_BULK_MEMORY_OVERFLOW(dst, len, mdst);
 
-          memset(mdst, val, len);
+          MEM_FILL(mdst, val, len);
 
           break;
         }
@@ -2841,7 +2995,7 @@ label_pop_csp_n:
               CHECK_BULK_MEMORY_OVERFLOW(addr + offset, 1, maddr);
               CHECK_ATOMIC_MEMORY_ACCESS();
               os_mutex_lock(&memory->mem_lock);
-              readv = (uint32)(*(uint8*)maddr);
+              readv = (uint32)LOAD_U8(maddr);
               os_mutex_unlock(&memory->mem_lock);
             }
             else if (opcode == WASM_OP_ATOMIC_I32_LOAD16_U) {
@@ -2876,7 +3030,7 @@ label_pop_csp_n:
               CHECK_BULK_MEMORY_OVERFLOW(addr + offset, 1, maddr);
               CHECK_ATOMIC_MEMORY_ACCESS();
               os_mutex_lock(&memory->mem_lock);
-              readv = (uint64)(*(uint8*)maddr);
+              readv = (uint64)(LOAD_U8(maddr));
               os_mutex_unlock(&memory->mem_lock);
             }
             else if (opcode == WASM_OP_ATOMIC_I64_LOAD16_U) {
@@ -2918,7 +3072,7 @@ label_pop_csp_n:
               CHECK_BULK_MEMORY_OVERFLOW(addr + offset, 1, maddr);
               CHECK_ATOMIC_MEMORY_ACCESS();
               os_mutex_lock(&memory->mem_lock);
-              *(uint8*)maddr = (uint8)sval;
+              STORE_U8(maddr, (uint8)sval);
               os_mutex_unlock(&memory->mem_lock);
             }
             else if (opcode == WASM_OP_ATOMIC_I32_STORE16) {
@@ -2952,7 +3106,7 @@ label_pop_csp_n:
               CHECK_BULK_MEMORY_OVERFLOW(addr + offset, 1, maddr);
               CHECK_ATOMIC_MEMORY_ACCESS();
               os_mutex_lock(&memory->mem_lock);
-              *(uint8*)maddr = (uint8)sval;
+              STORE_U8(maddr, (uint8)sval);
               os_mutex_unlock(&memory->mem_lock);
             }
             else if(opcode == WASM_OP_ATOMIC_I64_STORE16) {
@@ -2995,9 +3149,9 @@ label_pop_csp_n:
               CHECK_ATOMIC_MEMORY_ACCESS();
 
               os_mutex_lock(&memory->mem_lock);
-              readv = (uint32)(*(uint8*)maddr);
+              readv = (uint32)LOAD_U8(maddr);
               if (readv == expect)
-                *(uint8*)maddr = (uint8)(sval);
+                STORE_U8(maddr, (uint8)(sval));
               os_mutex_unlock(&memory->mem_lock);
             }
             else if (opcode == WASM_OP_ATOMIC_RMW_I32_CMPXCHG16_U) {
@@ -3039,9 +3193,9 @@ label_pop_csp_n:
               CHECK_ATOMIC_MEMORY_ACCESS();
 
               os_mutex_lock(&memory->mem_lock);
-              readv = (uint64)(*(uint8*)maddr);
+              readv = (uint64)LOAD_U8(maddr);
               if (readv == expect)
-                *(uint8*)maddr = (uint8)(sval);
+                STORE_U8(maddr, (uint8)(sval));
               os_mutex_unlock(&memory->mem_lock);
             }
             else if (opcode == WASM_OP_ATOMIC_RMW_I64_CMPXCHG16_U) {
