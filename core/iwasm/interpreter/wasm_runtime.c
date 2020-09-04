@@ -1145,36 +1145,43 @@ wasm_instantiate(WASMModule *module, bool is_sub_inst,
         }
     }
 
+#if WASM_USE_MEMORY_CALLBACK == 0
     /* Instantiate memories/tables/functions */
-    if ((module_inst->memory_count > 0
+    if (module_inst->memory_count > 0
          && !(module_inst->memories =
                 memories_instantiate(module,
                                      module_inst,
                                      heap_size, error_buf, error_buf_size)))
-        || (module_inst->table_count > 0
+        goto out_free;
+#endif
+
+    if (module_inst->table_count > 0
             && !(module_inst->tables =
                    tables_instantiate(module,
                                       module_inst,
                                       error_buf, error_buf_size)))
-        || (module_inst->function_count > 0
+        goto out_free;
+
+    if (module_inst->function_count > 0
             && !(module_inst->functions =
                    functions_instantiate(module,
                                          module_inst,
                                          error_buf, error_buf_size)))
-        || (module_inst->export_func_count > 0
+        goto out_free;
+
+    if (module_inst->export_func_count > 0
             && !(module_inst->export_functions = export_functions_instantiate(
                    module, module_inst, module_inst->export_func_count,
                    error_buf, error_buf_size)))
+        goto out_free;
+
 #if WASM_ENABLE_MULTI_MODULE != 0
-        || (module_inst->export_glob_count > 0
+    if (module_inst->export_glob_count > 0
             && !(module_inst->export_globals = export_globals_instantiate(
                    module, module_inst, module_inst->export_glob_count,
                    error_buf, error_buf_size)))
+        goto out_free;
 #endif
-    ) {
-        wasm_deinstantiate(module_inst, false);
-        return NULL;
-    }
 
     if (global_count > 0) {
         /**
@@ -1210,6 +1217,8 @@ wasm_instantiate(WASMModule *module, bool is_sub_inst,
         }
         bh_assert(global_data == global_data_end);
     }
+
+#if WASM_USE_MEMORY_CALLBACK == 0
 
     /* Initialize the memory data with data segment section */
     module_inst->default_memory =
@@ -1275,6 +1284,8 @@ wasm_instantiate(WASMModule *module, bool is_sub_inst,
         bh_memcpy_s(memory_data + base_offset, memory_size - base_offset,
                     data_seg->data, length);
     }
+
+#endif
 
     /* Initialize the table data with table segment section */
     module_inst->default_table =
@@ -1421,6 +1432,10 @@ wasm_instantiate(WASMModule *module, bool is_sub_inst,
 
     (void)global_data_end;
     return module_inst;
+
+out_free:
+    wasm_deinstantiate(module_inst, false);
+    return NULL;
 }
 
 void
@@ -1443,10 +1458,12 @@ wasm_deinstantiate(WASMModuleInstance *module_inst, bool is_sub_inst)
         wasm_runtime_destroy_wasi((WASMModuleInstanceCommon*)module_inst);
 #endif
 
+#if WASM_USE_MEMORY_CALLBACK == 0
     if (module_inst->memory_count > 0)
         memories_deinstantiate(
           module_inst,
           module_inst->memories, module_inst->memory_count);
+#endif
 
     tables_deinstantiate(module_inst->tables, module_inst->table_count);
     functions_deinstantiate(module_inst->functions, module_inst->function_count);
