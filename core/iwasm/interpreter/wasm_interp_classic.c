@@ -1231,7 +1231,7 @@ wasm_interp_call_func_import(WASMModuleInstance *module_inst,
 
 #endif
 
-#if 0
+#if 1
 #define DEBUG_OP(...) printf(__VA_ARGS__)
 #else
 #define DEBUG_OP(...) 
@@ -1243,9 +1243,17 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                                WASMFunctionInstance *cur_func,
                                WASMInterpFrame *prev_frame)
 {
+#if WASM_USE_MEMORY_CALLBACK == 0
   WASMMemoryInstance *memory = module->default_memory;
   uint32 num_bytes_per_page = memory ? memory->num_bytes_per_page : 0;
   uint32 linear_mem_size = memory ? num_bytes_per_page * memory->cur_page_count : 0;
+#else
+  uint32 linear_mem_size = 0;
+  if (exec_env->mem_cb->cb_mem_get_size(exec_env, (int*)&linear_mem_size) < 0) {
+    wasm_set_exception(module, "mem get size failed");
+    return;
+  }
+#endif
   uint8 *global_data = module->global_data;
   WASMTableInstance *table = module->default_table;
   WASMType **wasm_types = module->module->types;
@@ -1966,23 +1974,24 @@ label_pop_csp_n:
       /* memory size and memory grow instructions */
       HANDLE_OP (WASM_OP_MEMORY_SIZE):
       {
-        #if WASM_USE_MEMORY_CALLBACK != 0
+#if WASM_USE_MEMORY_CALLBACK != 0
         wasm_set_exception(module, "unsupported opcode");
         goto got_exception;
-        #endif
+#else
         uint32 reserved;
         read_leb_uint32(frame_ip, frame_ip_end, reserved);
         PUSH_I32(memory->cur_page_count);
         (void)reserved;
+#endif
         HANDLE_OP_END ();
       }
 
       HANDLE_OP (WASM_OP_MEMORY_GROW):
       {
-        #if WASM_USE_MEMORY_CALLBACK != 0
+#if WASM_USE_MEMORY_CALLBACK != 0
         wasm_set_exception(module, "unsupported opcode");
         goto got_exception;
-        #endif
+#else
         uint32 reserved, delta, prev_page_count = memory->cur_page_count;
 
         read_leb_uint32(frame_ip, frame_ip_end, reserved);
@@ -2001,6 +2010,7 @@ label_pop_csp_n:
         }
 
         (void)reserved;
+#endif
         HANDLE_OP_END ();
       }
 
@@ -3326,7 +3336,9 @@ label_pop_csp_n:
           cur_func = frame->function;
           UPDATE_ALL_FROM_FRAME();
 
+#if WASM_USE_MEMORY_CALLBACK == 0
           memory = module->default_memory;
+#endif
           if (wasm_get_exception(module))
               goto got_exception;
       }

@@ -17,6 +17,7 @@ typedef struct {
     void *userdata;
     int (*cb_memmove)(void *exec_env, uint32_t dst, int ndst, uint32_t src, int nsrc);
     int (*cb_memset)(void *exec_env, uint32_t dst, int val, int len);
+    int (*cb_mem_get_size)(void *exec_env, int *size);
 } WASMExecEnvMemoryCallback;
 
 #endif
